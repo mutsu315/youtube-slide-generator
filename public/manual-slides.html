@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YouTube収録スライド生成 — マニュアル</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Noto Sans JP', sans-serif;
+  background: #0a0a0a;
+  color: #f0f0f0;
+  overflow: hidden;
+  height: 100vh;
+}
+
+.slide {
+  display: none;
+  width: 100vw;
+  height: 100vh;
+  padding: 60px 100px;
+  flex-direction: column;
+  justify-content: center;
+}
+.slide.active { display: flex; }
+
+/* 背景バリエーション */
+.bg-dark { background: linear-gradient(135deg, #0f0c29, #1a1744, #24243e); }
+.bg-red  { background: linear-gradient(135deg, #1a0a2e, #2d1035, #0f3460); }
+.bg-blue { background: linear-gradient(135deg, #0c1445, #162454, #1a1744); }
+.bg-green { background: linear-gradient(135deg, #0a2e1a, #103520, #1a1744); }
+
+h1 {
+  font-size: 56px;
+  font-weight: 900;
+  line-height: 1.3;
+  margin-bottom: 30px;
+}
+h2 {
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-bottom: 24px;
+}
+h3 {
+  font-size: 32px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 16px;
+}
+p, li {
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1.8;
+  color: rgba(255,255,255,0.8);
+}
+ul, ol {
+  padding-left: 40px;
+}
+li { margin-bottom: 12px; }
+li::marker { color: #EF4444; }
+
+.accent { color: #EF4444; }
+.accent-box {
+  display: inline-block;
+  background: rgba(239, 68, 68, 0.15);
+  border-left: 4px solid #EF4444;
+  padding: 16px 24px;
+  border-radius: 0 12px 12px 0;
+  margin: 16px 0;
+  font-size: 28px;
+  font-weight: 500;
+}
+.muted { color: rgba(255,255,255,0.4); }
+.tag {
+  display: inline-block;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #EF4444;
+  background: rgba(239,68,68,0.12);
+  padding: 4px 14px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+}
+.subtitle {
+  font-size: 24px;
+  font-weight: 300;
+  color: rgba(255,255,255,0.5);
+  margin-top: 12px;
+}
+
+/* 表 */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 20px 0;
+  font-size: 24px;
+}
+th {
+  text-align: left;
+  font-weight: 700;
+  color: #EF4444;
+  padding: 12px 20px;
+  border-bottom: 2px solid rgba(239,68,68,0.3);
+}
+td {
+  padding: 12px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.75);
+}
+
+/* コードブロック */
+.code-block {
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 24px 30px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 20px;
+  line-height: 1.7;
+  color: rgba(255,255,255,0.7);
+  overflow-x: auto;
+  margin: 16px 0;
+  white-space: pre;
+}
+.code-block .hl { color: #EF4444; font-weight: 700; }
+
+/* 図解ボックス */
+.diagram {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  padding: 30px 40px;
+  margin: 20px 0;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 22px;
+  line-height: 1.6;
+  color: rgba(255,255,255,0.6);
+  white-space: pre;
+}
+
+/* 2カラム */
+.cols { display: flex; gap: 60px; margin-top: 20px; }
+.cols > div { flex: 1; }
+
+/* ステップ番号 */
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #EF4444;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 700;
+  margin-right: 16px;
+  flex-shrink: 0;
+}
+.step-row {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+.step-row p { font-size: 28px; padding-top: 6px; }
+
+/* ナビ */
+.nav {
+  position: fixed;
+  bottom: 20px;
+  right: 30px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+}
+.nav button {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.6);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: 'Noto Sans JP', sans-serif;
+}
+.nav button:hover { background: rgba(255,255,255,0.15); color: #fff; }
+.nav span { font-size: 13px; color: rgba(255,255,255,0.3); }
+
+/* 連番テーブル */
+.seq-table { font-size: 20px; }
+.seq-table td:first-child {
+  font-family: 'SF Mono', monospace;
+  font-weight: 700;
+  color: #EF4444;
+}
+.seq-table .type-nav { color: #60A5FA; }
+.seq-table .type-bullet { color: #FBBF24; }
+</style>
+</head>
+<body>
+
+<!-- ===== SLIDE 1: タイトル ===== -->
+<div class="slide bg-dark active" id="s1">
+  <div class="tag">User Manual</div>
+  <h1>YouTube収録スライド<br>生成システム</h1>
+  <p class="subtitle">フルオート収録モード — ユーザーマニュアル</p>
+  <p style="margin-top:40px; font-size:20px; color:rgba(255,255,255,0.3)">
+    https://mutsu315.github.io/youtube-slide-generator/
+  </p>
+</div>
+
+<!-- ===== SLIDE 2: これは何？ ===== -->
+<div class="slide bg-red" id="s2">
+  <div class="tag">Overview</div>
+  <h2>これは何？</h2>
+  <p style="font-size:30px; margin-bottom:30px">
+    長尺YouTube動画を <span class="accent">「一発撮り」</span> で収録するための<br>
+    フルオート専用スライド生成ツール
+  </p>
+  <div style="margin-top:10px">
+    <div class="step-row">
+      <span class="step-num">1</span>
+      <p><strong>ナビゲーションスライド</strong><br><span class="muted">今どこを話しているかが一目でわかる全体マップ</span></p>
+    </div>
+    <div class="step-row">
+      <span class="step-num">2</span>
+      <p><strong>箇条書きスライド</strong><br><span class="muted">ポイントが1つずつ追加される「パラパラ漫画」式</span></p>
+    </div>
+    <div class="step-row">
+      <span class="step-num">3</span>
+      <p><strong>カンペ（台本）</strong><br><span class="muted">画面下部に読み上げテキストを自動表示</span></p>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 3: クイックスタート ===== -->
+<div class="slide bg-blue" id="s3">
+  <div class="tag">Quick Start</div>
+  <h2>クイックスタート（3ステップ）</h2>
+  <div style="margin-top:20px">
+    <div class="step-row">
+      <span class="step-num">1</span>
+      <div>
+        <p><strong>APIキーを入力</strong></p>
+        <p style="font-size:22px" class="muted">Google（AIza...）または OpenAI（sk-...）</p>
+      </div>
+    </div>
+    <div class="step-row">
+      <span class="step-num">2</span>
+      <div>
+        <p><strong>台本を入力して [---STEP---] で区切る</strong></p>
+        <p style="font-size:22px" class="muted">各ステップの1行目 = タイトル、残り = 台本</p>
+      </div>
+    </div>
+    <div class="step-row">
+      <span class="step-num">3</span>
+      <div>
+        <p><strong>「収録スライド生成」ボタンを押す</strong></p>
+        <p style="font-size:22px" class="muted">あとは待つだけ。連番PNGが自動生成されます</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 4: 台本の書き方 ===== -->
+<div class="slide bg-dark" id="s4">
+  <div class="tag">Script Format</div>
+  <h2>台本の書き方</h2>
+  <div class="code-block">はじめに：今日のテーマ            <span class="muted">← 1行目がタイトルになる</span>
+今日はAIを使った動画制作の
+全体像をお話しします。            <span class="muted">← 2行目以降がカンペになる</span>
+
+<span class="hl">[---STEP---]</span>                       <span class="muted">← ステップの区切り</span>
+
+ステップ1：企画と台本づくり
+まず最初にやるべきことは、
+企画と台本づくりです。
+
+<span class="hl">[---STEP---]</span>
+
+ステップ2：スライドの準備
+次に、スライドを準備します。</div>
+</div>
+
+<!-- ===== SLIDE 5: 生成順序 ===== -->
+<div class="slide bg-red" id="s5">
+  <div class="tag">Output Order</div>
+  <h2>生成される画像の順番</h2>
+  <table class="seq-table">
+    <tr><th>#</th><th>種類</th><th>内容</th></tr>
+    <tr><td>001</td><td class="type-nav">ナビ</td><td>全体の流れ（ステップ1がハイライト）</td></tr>
+    <tr><td>002</td><td class="type-bullet">箇条書き</td><td>ステップ1 ● 1つ目だけ表示</td></tr>
+    <tr><td>003</td><td class="type-bullet">箇条書き</td><td>ステップ1 ● 1つ目 + ● 2つ目</td></tr>
+    <tr><td>004</td><td class="type-bullet">箇条書き</td><td>ステップ1 ● 1つ目 + ● 2つ目 + ● 3つ目</td></tr>
+    <tr><td>005</td><td class="type-nav">ナビ</td><td>全体の流れ（ステップ2がハイライト）</td></tr>
+    <tr><td>006</td><td class="type-bullet">箇条書き</td><td>ステップ2 ● 1つ目だけ表示</td></tr>
+    <tr><td>007</td><td class="type-bullet">箇条書き</td><td>ステップ2 ● 1つ目 + ● 2つ目</td></tr>
+  </table>
+  <p style="font-size:22px; margin-top:16px" class="muted">クリックで送るだけで、箇条書きがポンポン出現します</p>
+</div>
+
+<!-- ===== SLIDE 6: ナビスライドの見方 ===== -->
+<div class="slide bg-blue" id="s6">
+  <div class="tag">Navigation Slide</div>
+  <h2>ナビゲーションスライド</h2>
+  <div class="diagram">        ┌───────────────────────────────┐
+        │          全体の流れ             │
+        │                                │
+        │  ① はじめに          <span class="muted">(グレー)</span>    │
+        │  <span class="accent">② ステップ1：企画   ← 現在</span>     │
+        │  ③ ステップ2：スライド <span class="muted">(グレー)</span>   │
+        │  ④ ステップ3：収録    <span class="muted">(グレー)</span>    │
+        │                                │
+        └───────────────────────────────┘</div>
+  <div class="cols" style="margin-top:20px">
+    <div>
+      <p style="font-size:22px"><span class="accent">●</span> 現在のステップ → 赤ハイライト＋塗り番号</p>
+    </div>
+    <div>
+      <p style="font-size:22px"><span class="muted">●</span> その他 → グレーアウト</p>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 7: 箇条書きスライドの見方 ===== -->
+<div class="slide bg-dark" id="s7">
+  <div class="tag">Bullet Slide</div>
+  <h2>箇条書きスライド</h2>
+  <div class="diagram">  ┌─────────────────────────────────────┐
+  │ <span class="accent">■</span> ステップ1：企画と台本づくり          │  ← タイトル
+  │                                      │
+  │  <span class="muted">●</span> まず話す内容を整理する              │  ← 既出（やや暗い）
+  │  <span class="accent">●</span> 台本でテンポよく進行できる           │  ← 最新（明るい）
+  │                                      │
+  │──────────────────────────────────── │
+  │ <span style="color:#FBBF24">SCRIPT</span>                                │
+  │ まず最初にやるべきことは、企画と        │  ← カンペ
+  │ 台本づくりです。                       │
+  └─────────────────────────────────────┘</div>
+  <p style="font-size:22px; margin-top:16px" class="muted">
+    最新項目は赤マーカー＋白テキスト / 既出は薄めの表示 / 下部にカンペ
+  </p>
+</div>
+
+<!-- ===== SLIDE 8: ダウンロード ===== -->
+<div class="slide bg-green" id="s8">
+  <div class="tag">Download</div>
+  <h2>ダウンロード</h2>
+  <div class="cols">
+    <div>
+      <h3>ZIP一括ダウンロード</h3>
+      <ul>
+        <li>「連番PNG (.zip)」ボタンをクリック</li>
+        <li>ファイル名を自由に設定可能</li>
+        <li><code style="background:rgba(255,255,255,0.08); padding:2px 8px; border-radius:4px; font-size:20px">tutorial-001.png</code> 〜 の連番で出力</li>
+        <li>この順番のままOBSで表示すれば収録完了</li>
+      </ul>
+    </div>
+    <div>
+      <h3>個別ダウンロード</h3>
+      <ul>
+        <li>各スライドにホバー</li>
+        <li>「保存」ボタンでPNG単体保存</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 9: 設定項目 ===== -->
+<div class="slide bg-red" id="s9">
+  <div class="tag">Settings</div>
+  <h2>設定項目</h2>
+  <table>
+    <tr><th>項目</th><th>説明</th></tr>
+    <tr><td>LLMプロバイダー</td><td>箇条書き抽出に使うAI（Gemini / GPT）</td></tr>
+    <tr><td>LLMモデル</td><td>Gemini 2.5 Flash（高速）/ Pro（高精度）/ GPT-4o</td></tr>
+    <tr><td>スライドフォント</td><td>Noto Sans JP / M PLUS Rounded 1c 等</td></tr>
+    <tr><td>フォントウェイト</td><td>Regular 〜 Black（太さ）</td></tr>
+  </table>
+  <p style="font-size:22px; margin-top:24px" class="muted">
+    すべての設定はブラウザに自動保存され、次回以降復元されます
+  </p>
+</div>
+
+<!-- ===== SLIDE 10: 収録のコツ ===== -->
+<div class="slide bg-blue" id="s10">
+  <div class="tag">Tips</div>
+  <h2>収録のコツ</h2>
+  <ol style="margin-top:20px">
+    <li style="font-size:28px"><strong>ZIPをダウンロード</strong>して画像ビューアで開く</li>
+    <li style="font-size:28px"><strong>OBS / Zoom</strong> の画面共有でビューアを映す</li>
+    <li style="font-size:28px"><strong>矢印キー（→）</strong>でスライドを送りながら話す</li>
+    <li style="font-size:28px"><strong>カンペを見ながら</strong>話す — 暗記不要</li>
+    <li style="font-size:28px">箇条書きが<strong>ポンポン出る</strong>ので視聴者のテンポ感も良好</li>
+  </ol>
+</div>
+
+<!-- ===== SLIDE 11: FAQ ===== -->
+<div class="slide bg-dark" id="s11">
+  <div class="tag">FAQ</div>
+  <h2>よくある質問</h2>
+  <div style="margin-top:10px">
+    <h3 style="margin-top:16px">Q: 箇条書きが的外れ</h3>
+    <p style="font-size:22px">→ 各ステップに最低3〜4行の説明文を書いてください</p>
+    <h3 style="margin-top:24px">Q: カンペが途切れる</h3>
+    <p style="font-size:22px">→ 長い台本は自動分割され、各スライドに振り分けられます</p>
+    <h3 style="margin-top:24px">Q: APIエラーが出る</h3>
+    <p style="font-size:22px">→ APIキーの確認 / Gemini APIの有効化 / 無料枠の上限を確認</p>
+    <h3 style="margin-top:24px">Q: 停止ボタンを押したら？</h3>
+    <p style="font-size:22px">→ 生成済みスライドはそのまま残り、ダウンロード可能です</p>
+  </div>
+</div>
+
+<!-- ===== SLIDE 12: おわり ===== -->
+<div class="slide bg-red" id="s12">
+  <div style="text-align:center">
+    <h1 style="font-size:48px">さっそく使ってみましょう</h1>
+    <p style="font-size:28px; margin-top:20px; color:rgba(255,255,255,0.6)">
+      台本を入力 → [---STEP---] で区切り → 生成ボタン
+    </p>
+    <div class="accent-box" style="margin-top:40px; font-size:24px">
+      https://mutsu315.github.io/youtube-slide-generator/
+    </div>
+  </div>
+</div>
+
+<!-- ===== Navigation ===== -->
+<div class="nav">
+  <button onclick="prev()">← 前へ</button>
+  <span id="counter">1 / 12</span>
+  <button onclick="next()">次へ →</button>
+</div>
+
+<script>
+let current = 0
+const slides = document.querySelectorAll('.slide')
+const counter = document.getElementById('counter')
+const total = slides.length
+
+function show(i) {
+  slides.forEach(s => s.classList.remove('active'))
+  slides[i].classList.add('active')
+  counter.textContent = `${i + 1} / ${total}`
+}
+function next() { if (current < total - 1) { current++; show(current) } }
+function prev() { if (current > 0) { current--; show(current) } }
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next() }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); prev() }
+})
+</script>
+</body>
+</html>
