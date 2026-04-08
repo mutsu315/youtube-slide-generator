@@ -6,6 +6,8 @@
  * - 1チャプター = 複数枚テロップ（5~10秒ごとに切り替わる密度）
  */
 
+import { directSlideGeneration } from './llm/director.js'
+
 // ── 章検出（各種フォーマット対応） ───────────────────────
 
 /**
@@ -209,6 +211,7 @@ export async function runYouTubePipeline({
   targetChapterIndex = -1,
   llmModel = '',
   provider = '',
+  extractionMode = 'auto',
   abortController,
   onProgress,
   compositorOptions = {},
@@ -236,8 +239,22 @@ export async function runYouTubePipeline({
       message: `チャプター ${si + 1}/${steps.length}「${step.title}」: テロップ抽出中...`,
     })
 
-    // ローカルでテロップ抽出（API不要・必ず成功）
-    const telops = extractTelopLocal(step.body, step.title)
+    // テロップ抽出（ローカル処理またはAIディレクター）
+    let telops = []
+    if (extractionMode === 'director') {
+      telops = await directSlideGeneration(apiKey, step.title, step.body)
+      if (!telops || telops.length === 0) {
+        telops = extractTelopLocal(step.body, step.title)
+      }
+    } else if (extractionMode === 'raw') {
+      const padded = `\n${step.body}\n`
+      const blocks = padded.split(/\n\s*[-=*]{3,}\s*\n|\n{2,}/)
+        .map(b => b.trim())
+        .filter(b => b.length > 0)
+      telops = blocks.length > 0 ? blocks : [step.title]
+    } else {
+      telops = extractTelopLocal(step.body, step.title)
+    }
 
     if (signal.aborted) break
 
@@ -248,13 +265,15 @@ export async function runYouTubePipeline({
       message: `チャプター ${si + 1}: テロップ ${telops.length} 枚 → スライド描画中...`,
     })
 
-    // チャプター扉スライド
-    onProgress?.({
-      type: 'yt-render-nav',
-      stepIndex: si,
-      steps,
-      compositorOptions,
-    })
+    // チャプター扉スライド（ディレクターモードの場合はJSONの中でPattern Aが指定されるのでスキップ）
+    if (extractionMode !== 'director') {
+      onProgress?.({
+        type: 'yt-render-nav',
+        stepIndex: si,
+        steps,
+        compositorOptions,
+      })
+    }
 
     // テロップスライド群
     onProgress?.({

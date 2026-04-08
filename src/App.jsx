@@ -60,6 +60,7 @@ export default function App() {
       script: pipelineOptions.script || '',
       llmModel: config.llmModel,
       provider: config.provider,
+      extractionMode: config.extractionMode,
       abortController: controller,
       compositorOptions: compositorOpts,
       onProgress: async (event) => {
@@ -79,7 +80,8 @@ export default function App() {
                 pageText: navSlide.pageText, 
                 isNavSlide: true, 
                 stepIndex: event.stepIndex,
-                stepTitle: event.steps[event.stepIndex]?.title || ''
+                stepTitle: event.steps[event.stepIndex]?.title || '',
+                pptxLayout: config.pptxLayout
               }])
             } catch (err) {
               console.error('[nav-slide] error:', err)
@@ -88,18 +90,32 @@ export default function App() {
           }
           case 'yt-render-bullets': {
             try {
-              const kanpeChunks = splitKanpeText(event.body, event.bullets.length)
-              const bulletSlides = await compositeBulletProgressiveSet(event.stepTitle, event.bullets, kanpeChunks, event.compositorOptions)
-              onSlides(bulletSlides.map((slide, bi) => ({
-                compositeUrl: slide.url,
-                pageText: slide.pageText,
-                isBulletSlide: true,
-                stepIndex: event.stepIndex,
-                stepTitle: event.stepTitle,
-                bulletIndex: bi,
-                totalBullets: event.bullets.length,
-                kanpeText: kanpeChunks[bi] || '',
-              })))
+              const isObj = event.bullets.length > 0 && typeof event.bullets[0] === 'object'
+              const kanpeChunks = !isObj ? splitKanpeText(event.body, event.bullets.length) : []
+              
+              const textArray = event.bullets.map(b => isObj ? (b.text || b.title || ' ') : b)
+
+              const bulletSlides = await compositeBulletProgressiveSet(event.stepTitle, textArray, kanpeChunks, event.compositorOptions)
+              
+              onSlides(bulletSlides.map((slide, bi) => {
+                const bullet = event.bullets[bi]
+                const bText = isObj ? (bullet.text || bullet.title || ' ') : bullet
+                const kanpe = isObj ? (bullet.kanpe || '') : (kanpeChunks[bi] || '')
+                const layout = isObj && bullet.pattern ? bullet.pattern : config.pptxLayout
+
+                return {
+                  compositeUrl: slide.url,
+                  pageText: slide.pageText || bText,
+                  isBulletSlide: true,
+                  stepIndex: event.stepIndex,
+                  stepTitle: isObj && bullet.title ? bullet.title : event.stepTitle,
+                  bulletIndex: bi,
+                  totalBullets: event.bullets.length,
+                  kanpeText: kanpe,
+                  pptxLayout: layout,
+                  diagram: isObj ? bullet.diagram : null
+                }
+              }))
             } catch (err) {
               console.error('[bullet-slide] error:', err)
             }

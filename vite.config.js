@@ -4,5 +4,14 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: '/youtube-slide-generator/',
+  base: '/',
+  server: {
+    port: 5177,
+    strictPort: true,
+  },
+  optimizeDeps: {
+    include: ['pptxgenjs'],
+  },
 })
+
+

@@ -40,6 +40,8 @@ export default function Sidebar({ config, onConfigChange }) {
       llmModel: localStorage.getItem('yt-gen-llm-model') || 'gemini-2.5-flash',
       fontFamily: localStorage.getItem('yt-gen-font-family') || 'Noto Sans JP',
       fontWeight: localStorage.getItem('yt-gen-font-weight') || '700',
+      extractionMode: localStorage.getItem('yt-gen-extraction-mode') || 'auto',
+      pptxLayout: localStorage.getItem('yt-gen-pptx-layout') || 'left',
       selectedCharacterIds: JSON.parse(localStorage.getItem('yt-gen-selected-chars') || '[]'),
       characterRoles: JSON.parse(localStorage.getItem('yt-gen-char-roles') || '{}'),
     }
@@ -65,6 +67,8 @@ export default function Sidebar({ config, onConfigChange }) {
       llmModel: 'yt-gen-llm-model',
       fontFamily: 'yt-gen-font-family',
       fontWeight: 'yt-gen-font-weight',
+      extractionMode: 'yt-gen-extraction-mode',
+      pptxLayout: 'yt-gen-pptx-layout',
     }
     if (storageMap[key] && value != null) {
       localStorage.setItem(storageMap[key], value)
@@ -234,6 +238,55 @@ export default function Sidebar({ config, onConfigChange }) {
         >
           {FONT_WEIGHTS.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
         </select>
+      </div>
+
+      {/* 抽出モード (Extraction Mode) */}
+      <div>
+        <label className="flex items-center gap-1.5 text-xs text-red-300 mb-1">
+          <Settings size={12} /> テロップ抽出モード
+        </label>
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            {['auto', 'director', 'raw'].map(m => (
+              <button
+                key={m}
+                onClick={() => update('extractionMode', m)}
+                className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition ${
+                  config.extractionMode === m
+                    ? 'bg-red-600 text-white'
+                    : 'glass-dark text-white/50 hover:text-white/80'
+                }`}
+              >
+                {m === 'auto' ? 'AI短縮' : m === 'director' ? 'AIディレクター' : '原稿そのまま'}
+              </button>
+            ))}
+          </div>
+          {config.extractionMode === 'director' && (
+            <p className="text-[10px] text-red-300 leading-tight">※AIが文脈を読んで、最適なスライドレイアウト（A〜E）や図解パターンを自動で割り当てます。必ずGoogle API Keyを設定してください。</p>
+          )}
+        </div>
+      </div>
+
+      {/* PPTXレイアウト */}
+      <div>
+        <label className="flex items-center gap-1.5 text-xs text-red-300 mb-1">
+          <Settings size={12} /> PPTX配置 (背景画像用)
+        </label>
+        <div className="flex gap-2">
+          {['center', 'left'].map(l => (
+            <button
+              key={l}
+              onClick={() => update('pptxLayout', l)}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition ${
+                config.pptxLayout === l
+                  ? 'bg-red-600 text-white'
+                  : 'glass-dark text-white/50 hover:text-white/80'
+              }`}
+            >
+              {l === 'center' ? '中央（従来）' : '左寄せ（推奨）'}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* プレビュー */}
