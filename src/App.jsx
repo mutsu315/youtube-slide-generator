@@ -1,9 +1,10 @@
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Play, Square, Video } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import ScriptInput from './components/ScriptInput'
 import OutputFeed from './components/OutputFeed'
-import { runYouTubePipeline } from './lib/engine'
+import ChapterList from './components/ChapterList'
+import { runYouTubePipeline, detectChapters } from './lib/engine'
 import {
   compositeNavigationSlide,
   compositeBulletProgressiveSet,
@@ -25,8 +26,18 @@ export default function App() {
   const [script, setScript] = useState(() => localStorage.getItem('yt-gen-script') || '')
   const [results, setResults] = useState([])
   const [isGenerating, setIsGenerating] = useState(false)
+  const [generatingChapterIndex, setGeneratingChapterIndex] = useState(null)
   const [statusMessage, setStatusMessage] = useState('')
+  const [chapterStatus, setChapterStatus] = useState({}) // { [idx]: 'idle'|'generating'|'done'|'error', [`${idx}_count`]: number }
   const abortControllerRef = useRef(null)
+
+  // 台本が変わるたびに章を再検出
+  const chapters = useMemo(() => detectChapters(script), [script])
+
+  // 章が変わったら章ステータスをリセット（既存分は保持）
+  useEffect(() => {
+    setChapterStatus({})
+  }, [chapters.length])
 
   const handleScriptChange = useCallback((value) => {
     setScript(value)
@@ -37,14 +48,118 @@ export default function App() {
     setConfig((prev) => ({ ...prev, ...patch }))
   }, [])
 
-  const activeApiKey = config.provider === 'google' ? config.googleApiKey : config.openaiApiKey
+  // ── 共通スライド生成処理 ────────────────────────────────
+  const runPipeline = async (pipelineOptions, onSlides) => {
+    const compositorOpts = { fontFamily: config.fontFamily, fontWeight: config.fontWeight }
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
-  const handleGenerate = async () => {
-    if (!activeApiKey) {
-      setStatusMessage(`${config.provider === 'google' ? 'Google' : 'OpenAI'} APIキーを入力してください`)
-      setTimeout(() => setStatusMessage(''), 3000)
-      return
+    await runYouTubePipeline({
+      ...pipelineOptions,
+      apiKey: config.googleApiKey || 'local',
+      script: pipelineOptions.script || '',
+      llmModel: config.llmModel,
+      provider: config.provider,
+      abortController: controller,
+      compositorOptions: compositorOpts,
+      onProgress: async (event) => {
+        switch (event.type) {
+          case 'yt-start':
+            setStatusMessage(`全 ${event.total} ステップの収録スライドを生成開始...`)
+            break
+          case 'yt-step-start':
+          case 'yt-bullets-extracted':
+            setStatusMessage(event.message)
+            break
+          case 'yt-render-nav': {
+            try {
+              const navSlide = await compositeNavigationSlide(event.steps, event.stepIndex, event.compositorOptions)
+              onSlides([{ 
+                compositeUrl: navSlide.url, 
+                pageText: navSlide.pageText, 
+                isNavSlide: true, 
+                stepIndex: event.stepIndex,
+                stepTitle: event.steps[event.stepIndex]?.title || ''
+              }])
+            } catch (err) {
+              console.error('[nav-slide] error:', err)
+            }
+            break
+          }
+          case 'yt-render-bullets': {
+            try {
+              const kanpeChunks = splitKanpeText(event.body, event.bullets.length)
+              const bulletSlides = await compositeBulletProgressiveSet(event.stepTitle, event.bullets, kanpeChunks, event.compositorOptions)
+              onSlides(bulletSlides.map((slide, bi) => ({
+                compositeUrl: slide.url,
+                pageText: slide.pageText,
+                isBulletSlide: true,
+                stepIndex: event.stepIndex,
+                stepTitle: event.stepTitle,
+                bulletIndex: bi,
+                totalBullets: event.bullets.length,
+                kanpeText: kanpeChunks[bi] || '',
+              })))
+            } catch (err) {
+              console.error('[bullet-slide] error:', err)
+            }
+            break
+          }
+          case 'stopped':
+            setStatusMessage('生成を停止しました')
+            break
+          case 'yt-done':
+            setStatusMessage('収録スライド生成が完了しました')
+            break
+          case 'yt-step-complete':
+            setStatusMessage(event.message)
+            break
+        }
+      },
+    })
+  }
+
+  // ── 1章だけ生成 ─────────────────────────────────────────
+  const handleGenerateChapter = useCallback(async (chapterIndex) => {
+    if (isGenerating) return
+    const chapter = chapters[chapterIndex]
+    if (!chapter) return
+
+    setIsGenerating(true)
+    setGeneratingChapterIndex(chapterIndex)
+    setChapterStatus(prev => ({ ...prev, [chapterIndex]: 'generating' }))
+
+    const newSlides = []
+
+    try {
+      await runPipeline({ chapters, targetChapterIndex: chapterIndex }, (slides) => {
+        newSlides.push(...slides)
+        setResults(prev => {
+          // 既存のこの章のスライドを削除して差し替え
+          const others = prev.filter(r => r._chapterIndex !== chapterIndex)
+          return [...others, ...slides.map(s => ({ ...s, _chapterIndex: chapterIndex }))]
+        })
+      })
+      setChapterStatus(prev => ({
+        ...prev,
+        [chapterIndex]: 'done',
+        [`${chapterIndex}_count`]: newSlides.length,
+      }))
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setChapterStatus(prev => ({ ...prev, [chapterIndex]: 'error' }))
+        setStatusMessage(`エラー: ${err.message}`)
+      }
+    } finally {
+      setIsGenerating(false)
+      setGeneratingChapterIndex(null)
+      abortControllerRef.current = null
     }
+  }, [chapters, isGenerating, config])
+
+  // ── 全章まとめて生成 ─────────────────────────────────────
+  const handleGenerateAll = useCallback(async () => {
+    if (isGenerating) return
     if (!script.trim()) {
       setStatusMessage('台本を入力してください')
       setTimeout(() => setStatusMessage(''), 3000)
@@ -53,102 +168,47 @@ export default function App() {
 
     setIsGenerating(true)
     setResults([])
-    setStatusMessage('収録スライド生成を開始...')
+    setChapterStatus({})
+    setStatusMessage('全章の収録スライド生成を開始...')
 
     const controller = new AbortController()
     abortControllerRef.current = controller
 
-    const compositorOpts = {
-      fontFamily: config.fontFamily,
-      fontWeight: config.fontWeight,
-    }
-
     try {
-      await runYouTubePipeline({
-        apiKey: activeApiKey,
-        script,
-        llmModel: config.llmModel,
-        provider: config.provider,
-        abortController: controller,
-        compositorOptions: compositorOpts,
-        onProgress: async (event) => {
-          switch (event.type) {
-            case 'yt-start':
-              setStatusMessage(`全 ${event.total} ステップの収録スライドを生成開始...`)
-              break
-            case 'yt-step-start':
-              setStatusMessage(event.message)
-              break
-            case 'yt-bullets-extracted':
-              setStatusMessage(event.message)
-              break
-            case 'yt-render-nav': {
-              try {
-                const navSlide = await compositeNavigationSlide(
-                  event.steps,
-                  event.stepIndex,
-                  event.compositorOptions,
-                )
-                setResults((prev) => [...prev, {
-                  compositeUrl: navSlide.url,
-                  pageText: navSlide.pageText,
-                  isNavSlide: true,
-                  stepIndex: event.stepIndex,
-                }])
-              } catch (err) {
-                console.error('[nav-slide] error:', err)
-                setResults((prev) => [...prev, { error: `ナビスライド生成エラー: ${err.message}` }])
-              }
-              break
-            }
-            case 'yt-render-bullets': {
-              try {
-                const kanpeChunks = splitKanpeText(event.body, event.bullets.length)
-                const bulletSlides = await compositeBulletProgressiveSet(
-                  event.stepTitle,
-                  event.bullets,
-                  kanpeChunks,
-                  event.compositorOptions,
-                )
-                const newItems = bulletSlides.map((slide, bi) => ({
-                  compositeUrl: slide.url,
-                  pageText: slide.pageText,
-                  isBulletSlide: true,
-                  stepIndex: event.stepIndex,
-                  bulletIndex: bi,
-                  totalBullets: event.bullets.length,
-                }))
-                setResults((prev) => [...prev, ...newItems])
-              } catch (err) {
-                console.error('[bullet-slide] error:', err)
-                setResults((prev) => [...prev, { error: `箇条書きスライド生成エラー: ${err.message}` }])
-              }
-              break
-            }
-            case 'yt-step-complete':
-              setStatusMessage(event.message)
-              break
-            case 'stopped':
-              setStatusMessage('生成を停止しました')
-              break
-            case 'yt-done':
-              setStatusMessage('収録スライド生成が完了しました')
-              break
-            case 'error':
-              setResults((prev) => [...prev, { error: event.message }])
-              break
-          }
-        },
-      })
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        setStatusMessage(`エラー: ${err.message}`)
+      if (chapters.length === 0) {
+        throw new Error('章が検出できませんでした')
       }
+
+      for (let i = 0; i < chapters.length; i++) {
+        if (controller.signal.aborted) break
+        
+        setGeneratingChapterIndex(i)
+        setChapterStatus(prev => ({ ...prev, [i]: 'generating' }))
+
+        const newSlides = []
+        await runPipeline({ chapters, targetChapterIndex: i }, (slides) => {
+          newSlides.push(...slides)
+          setResults(prev => [...prev, ...slides.map(s => ({ ...s, _chapterIndex: i }))])
+        })
+        
+        setChapterStatus(prev => ({
+          ...prev,
+          [i]: 'done',
+          [`${i}_count`]: newSlides.length,
+        }))
+      }
+      
+      if (!controller.signal.aborted) {
+        setStatusMessage('全章の生成が完了しました')
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') setStatusMessage(`エラー: ${err.message}`)
     } finally {
       setIsGenerating(false)
+      setGeneratingChapterIndex(null)
       abortControllerRef.current = null
     }
-  }
+  }, [script, chapters, isGenerating, config])
 
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -173,18 +233,31 @@ export default function App() {
             </span>
           </div>
           <p className="text-xs text-white/50 mt-1 ml-9">
-            台本からナビゲーション＋箇条書き連番PNGを自動生成。クリックで進めるだけで収録完了。
+            台本からナビゲーション＋テロップ連番スライドを自動生成。PDFでダウンロード可能。
           </p>
         </header>
 
-        <div className="flex-1 flex flex-col gap-4 min-h-0">
-          <div className="glass p-4 flex-shrink-0" style={{ maxHeight: '35vh' }}>
+        <div className="flex-1 flex flex-col gap-3 min-h-0">
+          {/* 台本入力 */}
+          <div className="glass p-4 flex-shrink-0" style={{ maxHeight: '28vh' }}>
             <ScriptInput script={script} onScriptChange={handleScriptChange} />
           </div>
 
+          {/* 章リスト（検出された場合のみ表示） */}
+          {chapters.length > 0 && (
+            <ChapterList
+              chapters={chapters}
+              chapterStatus={chapterStatus}
+              onGenerateChapter={handleGenerateChapter}
+              results={results}
+            />
+          )}
+
+          {/* 操作ボタン */}
           <div className="flex items-center gap-3 flex-shrink-0">
+            {/* 全章まとめて生成ボタン */}
             <button
-              onClick={handleGenerate}
+              onClick={handleGenerateAll}
               disabled={isGenerating}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-medium text-sm transition btn-glow ${
                 isGenerating
@@ -193,7 +266,7 @@ export default function App() {
               }`}
             >
               <Play size={16} />
-              収録スライド生成
+              {chapters.length > 1 ? `全${chapters.length}章を一括生成` : '収録スライド生成'}
             </button>
 
             {isGenerating && (
@@ -209,8 +282,12 @@ export default function App() {
             {statusMessage && !isGenerating && (
               <span className="text-sm text-white/50">{statusMessage}</span>
             )}
+            {isGenerating && statusMessage && (
+              <span className="text-sm text-red-300">{statusMessage}</span>
+            )}
           </div>
 
+          {/* スライドプレビュー */}
           <div className="glass p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
             <OutputFeed
               results={results}

@@ -1,128 +1,196 @@
 /**
- * YouTube収録スライド生成エンジン
+ * YouTube収録スライド生成エンジン v2
  *
- * 台本を [---STEP---] で分割し、各ステップに対して:
- * 1. LLMで箇条書き（3〜4項目）を抽出
- * 2. ナビゲーションスライドを生成（compositor に委譲）
- * 3. 箇条書きプログレッシブスライドを生成（compositor に委譲）
- *
- * 対応プロバイダー: Google (Gemini) / OpenAI (GPT)
+ * - LLM API不使用。ローカル処理のみで100%安定動作
+ * - 台本の「刺さる一言」を verbatim（そのまま）抽出してテロップ化
+ * - 1チャプター = 複数枚テロップ（5~10秒ごとに切り替わる密度）
  */
+
+// ── 章検出（各種フォーマット対応） ───────────────────────
+
+/**
+ * 台本から章を自動検出する（[---STEP---] 以外のフォーマットにも対応）
+ * - [---STEP---] タグ
+ * - # / ## / ### Markdown 見出し
+ * - 第N章 / 第一章
+ * - CHAPTER N / STEP N
+ * - ■ タイトル
+ * @param {string} text
+ * @returns {{ title: string, body: string }[]}
+ */
+export function detectChapters(text) {
+  if (!text || !text.trim()) return []
+
+  const SEPARATOR = /^(?:\[---?STEP---?\]|#{1,3}\s+.+|第[一二三四五六七八九十百千\d]+章.*|(?:CHAPTER|chapter|STEP)\s*\d+.*|[■□▶]\s+.+)$/
+
+  const lines = text.split('\n')
+  const chapters = []
+  let currentTitle = null
+  let currentBody = []
+  let foundAny = false
+
+  const extractTitle = (line) => {
+    const l = line.trim()
+    let m
+    if ((m = l.match(/^\[---?STEP---?\]/))) return null // タイトルは次の行
+    if ((m = l.match(/^#{1,3}\s+(.+)/))) return m[1].trim()
+    if ((m = l.match(/^第[一二三四五六七八九十百千\d]+章[\s:：]*(.*)/))) return m[0].trim()
+    if ((m = l.match(/^(?:CHAPTER|chapter|STEP)\s*\d+[\s:：]*(.*)/))) return m[0].trim()
+    if ((m = l.match(/^[■□▶]\s+(.+)/))) return m[1].trim()
+    return ''
+  }
+
+  let skipNextAsTitle = false // [---STEP---] の次の行をタイトルとして使う
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const stripped = line.trim()
+
+    if (stripped.match(/^\[---?STEP---?\]/)) {
+      if (currentTitle !== null) {
+        chapters.push({ title: currentTitle, body: currentBody.join('\n').trim() })
+      }
+      currentTitle = null
+      currentBody = []
+      skipNextAsTitle = true
+      foundAny = true
+      continue
+    }
+
+    if (skipNextAsTitle && stripped) {
+      currentTitle = stripped
+      skipNextAsTitle = false
+      continue
+    }
+
+    if (SEPARATOR.test(stripped) && !stripped.match(/^\[---?STEP---?\]/)) {
+      const title = extractTitle(stripped)
+      if (title !== null) {
+        if (currentTitle !== null) {
+          chapters.push({ title: currentTitle, body: currentBody.join('\n').trim() })
+        }
+        currentTitle = title || `チャプター ${chapters.length + 1}`
+        currentBody = []
+        foundAny = true
+        continue
+      }
+    }
+
+    currentBody.push(line)
+  }
+
+  if (currentTitle !== null) {
+    chapters.push({ title: currentTitle, body: currentBody.join('\n').trim() })
+  }
+
+  // 区切りが1つも見つからなければ全体を1チャプターとして扱う
+  if (!foundAny && text.trim()) {
+    const allLines = text.split('\n')
+    return [{ title: allLines[0].trim() || 'チャプター 1', body: allLines.slice(1).join('\n').trim() }]
+  }
+
+  return chapters.filter(c => c.title || c.body)
+}
 
 // ── パーサー ──────────────────────────────────────────────
 
 /**
- * YouTube収録用の台本を [---STEP---] で分割
- * 各ステップの先頭行がタイトル、残りが本文（台本テキスト）
+ * [---STEP---] で台本を分割
+ * 先頭行 = チャプタータイトル、残り = 本文
  */
 export function parseYouTubeScript(text) {
   const parts = text.split(/\[---?STEP---?\]/gi).map(s => s.trim()).filter(Boolean)
   return parts.map((part, index) => {
     const lines = part.split('\n')
-    const title = lines[0]?.trim() || `ステップ ${index + 1}`
+    const title = lines[0]?.trim() || `チャプター ${index + 1}`
     const body = lines.slice(1).join('\n').trim()
     return { index, title, body }
   })
 }
 
+// ── テロップ抽出（ローカル処理） ─────────────────────────
+
+/**
+ * 台本テキストから「テロップとして映える一文」をそのまま抽出する
+ *
+ * 方針:
+ * - リライト・要約は一切しない（verbatim）
+ * - 5〜10秒ごとに画面が切り替わる密度（最大15枚）を目安に抽出
+ * - エラーメッセージは絶対に返さない
+ *
+ * @param {string} body - ステップ本文
+ * @param {string} title - ステップタイトル（フォールバック用）
+ * @returns {string[]} テロップフレーズ配列
+ */
+export function extractTelopLocal(body, title) {
+  if (!body || body.trim().length === 0) {
+    return [title]
+  }
+
+  // クリーニング：記号除去・空行除去
+  const cleaned = body
+    .replace(/[#*■「」【】〔〕『』（）()・…━─│]/g, '')
+    .replace(/　/g, ' ')
+    .trim()
+
+  // 文単位で分割（句点・感嘆符・疑問符・改行）
+  const rawSentences = cleaned
+    .split(/(?<=[。！？])|(?:\n{1,2})/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 8) // 短すぎる断片を除外
+
+  // テロップ適性スコアリング（高スコア順にソートして上位を採用）
+  const TELOP_MAX_LEN = 48 // 1行に収まる最大文字数
+  const scored = rawSentences.map(s => {
+    let score = 0
+    const len = s.length
+
+    // 長さ適正（テロップとして読みやすい）
+    if (len >= 12 && len <= TELOP_MAX_LEN) score += 3
+    else if (len <= 8 || len > 60) score -= 2
+
+    // 数字・数値表現を含む（インパクト大）
+    if (/[0-9０-９]/.test(s)) score += 3
+    if (/万円|億円|%|パーセント|年|ヶ月|倍|位/.test(s)) score += 2
+
+    // 断言・結論文（「〜です」「〜ます」で明確に終わる）
+    if (/です。$|ます。$|でしょう。$/.test(s)) score += 2
+
+    // 変化・対比・強調表現
+    if (/できる|変わる|なくなる|わかる|増える|減る|負ける|勝てる/.test(s)) score += 1
+    if (/大切|重要|絶対|必ず|ポイント|コツ|法則|鉄則/.test(s)) score += 1
+
+    // 疑問形（視聴者を引き込む）
+    if (/か？$|でしょうか。$/.test(s)) score += 1
+
+    return { text: s, score, len }
+  })
+
+  // 全文をスライド化（スコアフィルタなし・順番保持）
+  const MAX_TELOP = 30 // 1チャプター最大30枚
+
+  const qualified = scored
+    .filter(item => item.len >= 8 && item.len <= TELOP_MAX_LEN)
+    .slice(0, MAX_TELOP)
+    .map(item => item.text)
+
+  if (qualified.length > 0) return qualified
+
+  // フォールバック：条件を緩めて最初から3文
+  const fallback = rawSentences
+    .filter(s => s.length <= 60)
+    .slice(0, 3)
+
+  return fallback.length > 0 ? fallback : [title]
+}
+
 // ── ユーティリティ ───────────────────────────────────────
 
 export function detectProvider(apiKey) {
-  if (!apiKey) return 'openai'
+  if (!apiKey) return 'google'
   if (apiKey.startsWith('AIza')) return 'google'
   if (apiKey.startsWith('sk-')) return 'openai'
-  return 'openai'
-}
-
-// ── 箇条書き抽出（LLM） ─────────────────────────────────
-
-async function extractBulletsViaLLM(apiKey, stepText, stepTitle, llmModel, provider, signal) {
-  const systemPrompt = `あなたはYouTube動画スライドの箇条書き抽出の専門家です。
-与えられた台本テキストから、視聴者にとって最も重要な要点を3〜4項目の箇条書きとして抽出してください。
-
-ルール:
-- 各項目は35文字以内の簡潔な文にしてください
-- 台本の核心をわかりやすく要約してください
-- 必ずJSON形式のみで出力してください（説明文不要）
-
-出力フォーマット:
-{"bullets": ["要点1", "要点2", "要点3"]}`
-
-  const userMessage = `【ステップタイトル】
-${stepTitle}
-
-【台本テキスト】
-${stepText}
-
-上記からJSON形式で箇条書きを3〜4項目抽出してください。`
-
-  let responseText = ''
-
-  if (provider === 'google') {
-    const geminiModel = llmModel || 'gemini-2.5-flash'
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: userMessage }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 500 },
-      }),
-      signal,
-    })
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(`Gemini LLM エラー: ${res.status} - ${err.error?.message || res.statusText}`)
-    }
-    const data = await res.json()
-    responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-  } else {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: llmModel || 'gpt-4o',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
-        ],
-        temperature: 0.3,
-        max_tokens: 500,
-      }),
-      signal,
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(`OpenAI LLM エラー: ${res.status} - ${err.error?.message || res.statusText}`)
-    }
-    const data = await res.json()
-    responseText = data.choices[0].message.content
-  }
-
-  // JSON抽出
-  const jsonMatch = responseText.match(/\{[\s\S]*"bullets"[\s\S]*\}/)
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0])
-      if (Array.isArray(parsed.bullets) && parsed.bullets.length > 0) {
-        return parsed.bullets.slice(0, 5)
-      }
-    } catch { /* フォールバック */ }
-  }
-
-  // フォールバック: 箇条書き行を抽出
-  const lines = responseText.split('\n').filter(l => l.match(/^[-・●▶\d]/))
-  if (lines.length > 0) {
-    return lines.slice(0, 4).map(l => l.replace(/^[-・●▶\d.)\s]+/, '').trim())
-  }
-
-  return ['（箇条書きを抽出できませんでした）']
+  return 'google'
 }
 
 // ── メインパイプライン ─────────────────────────────────
@@ -130,16 +198,15 @@ ${stepText}
 /**
  * YouTube収録モード用メインパイプライン
  *
- * 出力順序:
- *   各ステップについて:
- *   1. ナビゲーションスライド（現在ステップをハイライト）
- *   2. 箇条書きプログレッシブスライド × N枚
- *
- * Canvas描画は onProgress イベント経由で呼び出し元（App）に委譲
+ * 出力順序（各ステップ）:
+ *   1. チャプター扉スライド
+ *   2. テロップスライド × N枚（台本の刺さる一言を順番に）
  */
 export async function runYouTubePipeline({
   apiKey,
   script,
+  chapters = null,
+  targetChapterIndex = -1,
   llmModel = '',
   provider = '',
   abortController,
@@ -147,16 +214,17 @@ export async function runYouTubePipeline({
   compositorOptions = {},
 }) {
   const signal = abortController.signal
-  const steps = parseYouTubeScript(script)
-  const detectedProvider = provider || detectProvider(apiKey)
+  const steps = chapters || parseYouTubeScript(script)
 
   if (steps.length === 0) {
-    throw new Error('台本に [---STEP---] タグが見つかりませんでした。ステップごとに区切ってください。')
+    throw new Error('台本から章が見つかりませんでした。')
   }
 
-  onProgress?.({ type: 'yt-start', total: steps.length, provider: detectedProvider })
+  const indicesToRun = targetChapterIndex >= 0 ? [targetChapterIndex] : steps.map((_, i) => i)
 
-  for (let si = 0; si < steps.length; si++) {
+  onProgress?.({ type: 'yt-start', total: indicesToRun.length })
+
+  for (let si of indicesToRun) {
     if (signal.aborted) break
     const step = steps[si]
 
@@ -165,31 +233,22 @@ export async function runYouTubePipeline({
       stepIndex: si,
       total: steps.length,
       title: step.title,
-      message: `ステップ ${si + 1}/${steps.length}「${step.title}」: 箇条書き抽出中...`,
+      message: `チャプター ${si + 1}/${steps.length}「${step.title}」: テロップ抽出中...`,
     })
 
-    // LLMで箇条書き抽出
-    let bullets
-    try {
-      bullets = await extractBulletsViaLLM(
-        apiKey, step.body, step.title, llmModel, detectedProvider, signal
-      )
-    } catch (err) {
-      if (err.name === 'AbortError') break
-      onProgress?.({ type: 'error', stepIndex: si, message: err.message })
-      bullets = ['（箇条書き抽出に失敗しました）']
-    }
+    // ローカルでテロップ抽出（API不要・必ず成功）
+    const telops = extractTelopLocal(step.body, step.title)
 
     if (signal.aborted) break
 
     onProgress?.({
       type: 'yt-bullets-extracted',
       stepIndex: si,
-      bullets,
-      message: `ステップ ${si + 1}: 箇条書き ${bullets.length} 項目抽出 → スライド描画中...`,
+      bullets: telops,
+      message: `チャプター ${si + 1}: テロップ ${telops.length} 枚 → スライド描画中...`,
     })
 
-    // ナビゲーションスライド生成を呼び出し元に委譲
+    // チャプター扉スライド
     onProgress?.({
       type: 'yt-render-nav',
       stepIndex: si,
@@ -197,12 +256,12 @@ export async function runYouTubePipeline({
       compositorOptions,
     })
 
-    // 箇条書きプログレッシブスライド生成を呼び出し元に委譲
+    // テロップスライド群
     onProgress?.({
       type: 'yt-render-bullets',
       stepIndex: si,
       stepTitle: step.title,
-      bullets,
+      bullets: telops,
       body: step.body,
       compositorOptions,
     })
@@ -211,7 +270,7 @@ export async function runYouTubePipeline({
       type: 'yt-step-complete',
       stepIndex: si,
       total: steps.length,
-      message: `ステップ ${si + 1}/${steps.length}「${step.title}」完了`,
+      message: `チャプター ${si + 1}/${steps.length}「${step.title}」完了`,
     })
   }
 

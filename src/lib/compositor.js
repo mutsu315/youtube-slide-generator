@@ -1,18 +1,20 @@
 /**
- * YouTube収録スライド Canvas合成エンジン
+ * YouTube収録スライド Canvas合成エンジン v3
  *
- * 1. ナビゲーションスライド: 全ステップ一覧＋現在ステップのハイライト
- * 2. 箇条書きプログレッシブスライド: 要素が1つずつ追加される連番画像
- * 3. カンペ（台本）: スライド下部に話者用テキストを表示
+ * 責任範囲: テキストオーバーレイのみ
+ * - 背景: 透明（別システムの写真と合成する前提）
+ * - テキストボックス: 白(不透明度70%)・中央配置・黒文字
+ * - フォント: Noto Sans JP Bold
  *
- * テキスト描画はすべて BudouX による文節改行 + Google Fonts を適用
+ * ドキュメント参照:
+ * https://docs.google.com/document/d/1VHfJvGRxGcK4jMlavApY6bLrkx6Co5JwB5vHfU9cGQ0
  */
-
-const SLIDE_WIDTH = 1920
-const SLIDE_HEIGHT = 1080
 
 import { loadDefaultJapaneseParser } from 'budoux'
 const parser = loadDefaultJapaneseParser()
+
+const SLIDE_WIDTH = 1920
+const SLIDE_HEIGHT = 1080
 
 // ── ユーティリティ ──────────────────────────────────────
 
@@ -22,367 +24,287 @@ async function ensureFont(fontFamily, weight) {
   } catch { /* フォールバック */ }
 }
 
-/** テキストを指定幅で折り返し（BudouX利用） */
+/**
+ * BudouXを使った日本語文節折り返し
+ * 単語の途中では折り返さない
+ */
 function wrapText(ctx, text, maxWidth) {
   const lines = []
   const paragraphs = text.split('\n')
 
   for (const paragraph of paragraphs) {
-    if (paragraph.trim() === '') {
-      lines.push('')
-      continue
-    }
+    if (paragraph.trim() === '') { lines.push(''); continue }
+
     const chunks = parser.parse(paragraph)
     let currentLine = ''
+
     for (const chunk of chunks) {
       const testLine = currentLine + chunk
-      const testWidth = ctx.measureText(testLine).width
-      if (testWidth > maxWidth && currentLine !== '') {
+      if (ctx.measureText(testLine).width > maxWidth && currentLine !== '') {
         lines.push(currentLine)
-        let subCurrent = ''
-        for (const char of chunk) {
-          if (ctx.measureText(subCurrent + char).width > maxWidth && subCurrent !== '') {
-            lines.push(subCurrent)
-            subCurrent = char
-          } else {
-            subCurrent += char
+        // 1チャンクが最大幅を超える場合のみ文字単位で処理（まれなケース）
+        if (ctx.measureText(chunk).width > maxWidth) {
+          let sub = ''
+          for (const char of chunk) {
+            if (ctx.measureText(sub + char).width > maxWidth && sub !== '') {
+              lines.push(sub)
+              sub = char
+            } else {
+              sub += char
+            }
           }
+          currentLine = sub
+        } else {
+          currentLine = chunk
         }
-        currentLine = subCurrent
       } else {
         currentLine = testLine
       }
     }
     if (currentLine) lines.push(currentLine)
   }
+
   return lines
 }
 
-/** 角丸矩形パスを描画 */
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.moveTo(x + r, y)
-  ctx.lineTo(x + w - r, y)
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r)
-  ctx.lineTo(x + w, y + h - r)
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
-  ctx.lineTo(x + r, y + h)
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r)
-  ctx.lineTo(x, y + r)
-  ctx.quadraticCurveTo(x, y, x + r, y)
-  ctx.closePath()
-}
-
-function fillRoundRect(ctx, x, y, w, h, r, fillStyle) {
-  ctx.fillStyle = fillStyle
-  ctx.beginPath()
-  roundRect(ctx, x, y, w, h, r)
-  ctx.fill()
-}
-
-function strokeRoundRect(ctx, x, y, w, h, r, strokeStyle, lineWidth = 1) {
-  ctx.strokeStyle = strokeStyle
-  ctx.lineWidth = lineWidth
-  ctx.beginPath()
-  roundRect(ctx, x, y, w, h, r)
-  ctx.stroke()
-}
-
-/** 暗いグラデーション背景 */
-function drawDarkGradientBg(ctx) {
-  const grad = ctx.createLinearGradient(0, 0, SLIDE_WIDTH, SLIDE_HEIGHT)
-  grad.addColorStop(0, '#0f0c29')
-  grad.addColorStop(0.5, '#1a1744')
-  grad.addColorStop(1, '#24243e')
-  ctx.fillStyle = grad
-  ctx.fillRect(0, 0, SLIDE_WIDTH, SLIDE_HEIGHT)
-}
-
-// ── ナビゲーションスライド ──────────────────────────────
+// ── チャプター扉スライド ──────────────────────────────────
 
 /**
- * 全ステップ一覧を表示し、currentIndex のステップをハイライト
- * @param {Array} steps - [{ title }]
- * @param {number} currentIndex
- * @param {object} options - { fontFamily, fontWeight }
- * @returns {{ url: string, pageText: string }}
+ * チャプター扉: 透明背景 + 白ボックス（大タイトル）
+ * Canvasの背景を透明にし、写真背景と重ねる前提
  */
 export async function compositeNavigationSlide(steps, currentIndex, options = {}) {
-  const {
-    fontFamily = 'Noto Sans JP',
-    fontWeight = '700',
-  } = options
+  const { fontFamily = 'Noto Sans JP' } = options
 
-  await ensureFont(fontFamily, fontWeight)
+  await ensureFont(fontFamily, '700')
   await ensureFont(fontFamily, '400')
-  await ensureFont(fontFamily, '500')
 
   const canvas = document.createElement('canvas')
   canvas.width = SLIDE_WIDTH
   canvas.height = SLIDE_HEIGHT
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { alpha: true })
 
-  drawDarkGradientBg(ctx)
+  // 透明背景（clearRect で透明にする）
+  ctx.clearRect(0, 0, SLIDE_WIDTH, SLIDE_HEIGHT)
 
-  // 装飾：薄い円
-  ctx.fillStyle = 'rgba(239, 68, 68, 0.03)'
-  ctx.beginPath()
-  ctx.arc(SLIDE_WIDTH - 300, 150, 350, 0, Math.PI * 2)
-  ctx.fill()
+  const currentStep = steps[currentIndex]
 
-  // ガラスパネル
-  const stepH = 72
-  const panelPadTop = 100
-  const panelPadBottom = 50
-  const panelH = Math.min(900, panelPadTop + panelPadBottom + steps.length * stepH)
-  const panelW = 1200
-  const panelX = (SLIDE_WIDTH - panelW) / 2
-  const panelY = (SLIDE_HEIGHT - panelH) / 2
+  // ── メインタイトルボックス ──
+  // 白い長方形・透明度70・角丸なし・影なし (Google Doc仕様準拠)
+  const boxPadX = 60  // 左右パディング
+  const boxPadY = 40  // 上下パディング
+  const boxW = SLIDE_WIDTH - 240
+  const boxX = (SLIDE_WIDTH - boxW) / 2
 
-  fillRoundRect(ctx, panelX, panelY, panelW, panelH, 24, 'rgba(255, 255, 255, 0.05)')
-  strokeRoundRect(ctx, panelX, panelY, panelW, panelH, 24, 'rgba(255, 255, 255, 0.1)')
+  // タイトルのフォント設定してテキスト幅を計算
+  ctx.font = `700 72px "${fontFamily}"`
+  const titleLines = wrapText(ctx, currentStep.title, boxW - boxPadX * 2)
 
-  // タイトル
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'alphabetic'
-  ctx.font = `${fontWeight} 44px "${fontFamily}"`
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-  ctx.fillText('全体の流れ', SLIDE_WIDTH / 2, panelY + 65)
+  // CHAPTER ラベル
+  const labelFontSize = 28
+  const lineH = 72 * 1.5
+  const titleBlockH = titleLines.length * lineH
+  const labelH = labelFontSize * 2
+  const totalContentH = labelH + 24 + titleBlockH
+  const boxH = totalContentH + boxPadY * 2
+  const boxY = (SLIDE_HEIGHT - boxH) / 2
 
-  // 区切り線
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(panelX + 60, panelY + 88)
-  ctx.lineTo(panelX + panelW - 60, panelY + 88)
-  ctx.stroke()
+  // 白ボックス描画
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.70)'
+  ctx.fillRect(boxX, boxY, boxW, boxH)
 
-  // ステップ一覧
-  const listStartY = panelY + panelPadTop + 10
+  // CHAPTER ラベル
+  ctx.font = `700 ${labelFontSize}px "${fontFamily}"`
+  ctx.fillStyle = '#CC0000'  // 数字部分は赤文字（Google Doc仕様）
   ctx.textAlign = 'left'
+  ctx.textBaseline = 'alphabetic'
+  ctx.fillText(
+    `CHAPTER ${currentIndex + 1} / ${steps.length}`,
+    boxX + boxPadX,
+    boxY + boxPadY + labelFontSize
+  )
 
-  for (let i = 0; i < steps.length; i++) {
-    const y = listStartY + i * stepH
-    const isCurrent = i === currentIndex
+  // タイトルテキスト
+  ctx.font = `700 72px "${fontFamily}"`
+  ctx.fillStyle = '#000000'
+  const titleStartY = boxY + boxPadY + labelH + 24 + 72
+  titleLines.slice(0, 3).forEach((line, li) => {
+    ctx.fillText(line, boxX + boxPadX, titleStartY + li * lineH)
+  })
 
-    if (isCurrent) {
-      // ハイライト背景
-      fillRoundRect(ctx, panelX + 40, y, panelW - 80, stepH - 10, 14, 'rgba(239, 68, 68, 0.15)')
-      // 左アクセントバー
-      fillRoundRect(ctx, panelX + 40, y, 5, stepH - 10, 3, '#EF4444')
+  // 前後チャプター（小さく下部に）
+  const prevChapter = steps[currentIndex - 1]
+  const nextChapter = steps[currentIndex + 1]
+  const subY = boxY + boxH + 20
 
-      // 番号サークル
-      ctx.fillStyle = '#EF4444'
-      ctx.beginPath()
-      ctx.arc(panelX + 90, y + (stepH - 10) / 2, 20, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.fillStyle = '#FFFFFF'
-      ctx.font = `700 22px "${fontFamily}"`
-      ctx.textAlign = 'center'
-      ctx.fillText(String(i + 1), panelX + 90, y + (stepH - 10) / 2 + 8)
+  if (prevChapter || nextChapter) {
+    const subBoxH = 44
+    const subBoxW = boxW
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.50)'
+    ctx.fillRect(boxX, subY, subBoxW, subBoxH)
 
-      // テキスト
-      ctx.textAlign = 'left'
-      ctx.font = `700 30px "${fontFamily}"`
-      ctx.fillStyle = '#FFFFFF'
-      const titleLines = wrapText(ctx, steps[i].title, panelW - 220)
-      ctx.fillText(titleLines[0] || steps[i].title, panelX + 125, y + (stepH - 10) / 2 + 10)
-    } else {
-      // 番号サークル（アウトライン）
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)'
-      ctx.lineWidth = 1.5
-      ctx.beginPath()
-      ctx.arc(panelX + 90, y + (stepH - 10) / 2, 20, 0, Math.PI * 2)
-      ctx.stroke()
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
-      ctx.font = `500 22px "${fontFamily}"`
-      ctx.textAlign = 'center'
-      ctx.fillText(String(i + 1), panelX + 90, y + (stepH - 10) / 2 + 8)
+    ctx.font = `400 22px "${fontFamily}"`
+    ctx.fillStyle = '#333333'
+    ctx.textAlign = 'left'
 
-      // テキスト
-      ctx.textAlign = 'left'
-      ctx.font = `400 26px "${fontFamily}"`
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.30)'
-      const titleLines = wrapText(ctx, steps[i].title, panelW - 220)
-      ctx.fillText(titleLines[0] || steps[i].title, panelX + 125, y + (stepH - 10) / 2 + 9)
-    }
+    let subText = ''
+    if (prevChapter) subText += `← ${prevChapter.title}`
+    if (prevChapter && nextChapter) subText += '　　'
+    if (nextChapter) subText += `${nextChapter.title} →`
+    ctx.fillText(subText, boxX + 24, subY + 28)
   }
-
-  // 下部: 現在のステップ名
-  ctx.textAlign = 'center'
-  ctx.font = `500 20px "${fontFamily}"`
-  ctx.fillStyle = 'rgba(239, 68, 68, 0.6)'
-  ctx.fillText(`▶ ${steps[currentIndex]?.title || ''}`, SLIDE_WIDTH / 2, SLIDE_HEIGHT - 40)
 
   const url = canvas.toDataURL('image/png')
-  return { url, pageText: `ナビゲーション: ${steps[currentIndex]?.title}` }
+  return { url, pageText: `チャプター: ${currentStep?.title}` }
 }
 
-// ── 箇条書きプログレッシブスライド ──────────────────────
+// ── テロップスライド ──────────────────────────────────────
 
 /**
- * 1枚の箇条書きスライドを生成
- * visibleCount 個目までの箇条書きが表示された状態
+ * テロップスライド: 透明背景 + 白ボックス + 台本テキスト
+ *
+ * Google Doc仕様:
+ * - 白の長方形ボックス（角丸なし・影なし）透明度70
+ * - 画面中央に配置
+ * - テキストは左寄せ
+ * - 余白: 上下20px・左右30px
+ * - フォント: Noto Sans JP Bold・黒文字 #000000
+ * - 1スライド = 1メッセージ
  */
-export async function compositeBulletSlide(stepTitle, bullets, visibleCount, kanpeText, options = {}) {
+export async function compositeTelopSlide(stepTitle, telop, kanpeText, options = {}) {
   const {
     fontFamily = 'Noto Sans JP',
-    fontWeight = '700',
-    bulletFontSize = 38,
-    kanpeFontSize = 22,
+    kanpeFontSize = 20,
   } = options
 
-  await ensureFont(fontFamily, fontWeight)
+  await ensureFont(fontFamily, '700')
   await ensureFont(fontFamily, '400')
-  await ensureFont(fontFamily, '500')
 
   const canvas = document.createElement('canvas')
   canvas.width = SLIDE_WIDTH
   canvas.height = SLIDE_HEIGHT
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { alpha: true })
 
-  // 背景
-  drawDarkGradientBg(ctx)
+  // 透明背景
+  ctx.clearRect(0, 0, SLIDE_WIDTH, SLIDE_HEIGHT)
 
-  // 装飾
-  ctx.fillStyle = 'rgba(239, 68, 68, 0.03)'
-  ctx.beginPath()
-  ctx.arc(SLIDE_WIDTH - 200, -100, 400, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.fillStyle = 'rgba(99, 102, 241, 0.02)'
-  ctx.beginPath()
-  ctx.arc(200, SLIDE_HEIGHT + 50, 300, 0, Math.PI * 2)
-  ctx.fill()
+  // ── テキストボックスのサイズ計算 ──
+  const boxPadX = 30   // 左右パディング (Google Doc仕様: 左右30px)
+  const boxPadY = 20   // 上下パディング (Google Doc仕様: 上下20px)
+  const boxMaxW = SLIDE_WIDTH - 240  // 両側に120pxのマージン
 
-  // ── タイトルエリア ──
-  const titleY = 55
-  fillRoundRect(ctx, 80, titleY, 5, 50, 3, '#EF4444')
+  // フォントサイズ自動調整（文字数に応じて）
+  const telopLen = telop.length
+  let telopFontSize = 64
+  if (telopLen > 30) telopFontSize = 54
+  if (telopLen > 42) telopFontSize = 44
+  if (telopLen > 55) telopFontSize = 36
 
+  ctx.font = `700 ${telopFontSize}px "${fontFamily}"`
+  const telopLines = wrapText(ctx, telop, boxMaxW - boxPadX * 2)
+
+  const lineH = telopFontSize * 1.6
+  const telopBlockH = telopLines.length * lineH
+
+  // チャプタータイトル行
+  const chapterFontSize = 22
+  const chapterH = chapterFontSize * 1.8
+
+  const totalContentH = chapterH + 8 + telopBlockH
+  const boxH = totalContentH + boxPadY * 2
+  const boxW = boxMaxW
+  const boxX = (SLIDE_WIDTH - boxW) / 2
+  const boxY = (SLIDE_HEIGHT - boxH) / 2  // 垂直中央
+
+  // 白のテキストボックス描画（角丸なし・影なし・透明度70）
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.70)'
+  ctx.fillRect(boxX, boxY, boxW, boxH)
+
+  // チャプタータイトル（小さく・グレー）
+  ctx.font = `400 ${chapterFontSize}px "${fontFamily}"`
+  ctx.fillStyle = '#666666'
   ctx.textAlign = 'left'
   ctx.textBaseline = 'alphabetic'
-  ctx.font = `${fontWeight} 42px "${fontFamily}"`
-  ctx.fillStyle = '#FFFFFF'
-  const titleLines = wrapText(ctx, stepTitle, SLIDE_WIDTH - 200)
-  ctx.fillText(titleLines[0] || stepTitle, 105, titleY + 40)
+  ctx.fillText(stepTitle, boxX + boxPadX, boxY + boxPadY + chapterFontSize)
 
-  // ── 箇条書きエリア ──
-  const bulletAreaY = 150
-  const bulletAreaH = 640
-  const bulletPanelX = 80
-  const bulletPanelW = SLIDE_WIDTH - 160
+  // テロップテキスト（黒・Bold・左寄せ）
+  ctx.font = `700 ${telopFontSize}px "${fontFamily}"`
+  ctx.fillStyle = '#000000'
+  const telopStartY = boxY + boxPadY + chapterH + 8 + telopFontSize
+  telopLines.forEach((line, li) => {
+    ctx.fillText(line, boxX + boxPadX, telopStartY + li * lineH)
+  })
 
-  fillRoundRect(ctx, bulletPanelX, bulletAreaY, bulletPanelW, bulletAreaH, 20, 'rgba(255, 255, 255, 0.04)')
-  strokeRoundRect(ctx, bulletPanelX, bulletAreaY, bulletPanelW, bulletAreaH, 20, 'rgba(255, 255, 255, 0.06)')
-
-  const bulletLineH = bulletFontSize * 1.6
-  const bulletPadX = 60
-  const bulletPadY = 50
-  const bulletMaxW = bulletPanelW - bulletPadX * 2 - 60
-
-  for (let i = 0; i < visibleCount && i < bullets.length; i++) {
-    const isLatest = i === visibleCount - 1
-    const baseY = bulletAreaY + bulletPadY + i * (bulletLineH * 1.8 + 20)
-
-    const markerX = bulletPanelX + bulletPadX
-    const markerY = baseY + bulletFontSize * 0.35
-
-    if (isLatest) {
-      // 最新項目: 赤マーカー + 白テキスト
-      ctx.fillStyle = '#EF4444'
-      ctx.beginPath()
-      ctx.arc(markerX + 8, markerY, 10, 0, Math.PI * 2)
-      ctx.fill()
-
-      ctx.font = `${fontWeight} ${bulletFontSize}px "${fontFamily}"`
-      ctx.fillStyle = '#FFFFFF'
-    } else {
-      // 既出項目: 暗いマーカー + グレーテキスト
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.35)'
-      ctx.beginPath()
-      ctx.arc(markerX + 8, markerY, 8, 0, Math.PI * 2)
-      ctx.fill()
-
-      ctx.font = `500 ${bulletFontSize}px "${fontFamily}"`
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.55)'
-    }
-
-    // テキスト描画（BudouX折り返し）
-    const textX = markerX + 35
-    const lines = wrapText(ctx, bullets[i], bulletMaxW)
-    for (let li = 0; li < lines.length; li++) {
-      ctx.fillText(lines[li], textX, baseY + bulletFontSize + li * bulletLineH)
-    }
-  }
-
-  // ── カンペエリア（最下部）──
+  // ── カンペエリア（スライド最下部・暗い帯）──
   if (kanpeText && kanpeText.trim()) {
-    const kanpeAreaY = SLIDE_HEIGHT - 180
-    const kanpeAreaH = 160
-    const kanpePadX = 40
-    const kanpePadY = 15
+    const kanpeH = 120
+    const kanpeY = SLIDE_HEIGHT - kanpeH
 
-    fillRoundRect(ctx, 0, kanpeAreaY, SLIDE_WIDTH, kanpeAreaH, 0, 'rgba(0, 0, 0, 0.55)')
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(0, kanpeAreaY)
-    ctx.lineTo(SLIDE_WIDTH, kanpeAreaY)
-    ctx.stroke()
+    // 半透明ダーク背景（カンペ用・視聴者から見えにくく）
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
+    ctx.fillRect(0, kanpeY, SLIDE_WIDTH, kanpeH)
 
-    // ラベル
-    ctx.font = `700 14px "${fontFamily}"`
+    // SCRIPT ラベル
+    ctx.font = `700 12px "${fontFamily}"`
     ctx.fillStyle = 'rgba(251, 191, 36, 0.6)'
     ctx.textAlign = 'left'
-    ctx.fillText('SCRIPT', kanpePadX, kanpeAreaY + 22)
+    ctx.fillText('SCRIPT', 40, kanpeY + 18)
 
-    // カンペテキスト（BudouX折り返し）
+    // カンペテキスト
     ctx.font = `400 ${kanpeFontSize}px "${fontFamily}"`
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)'
-    const kanpeMaxW = SLIDE_WIDTH - kanpePadX * 2
-    const kanpeLines = wrapText(ctx, kanpeText.trim(), kanpeMaxW)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.80)'
+    const kanpeLines = wrapText(ctx, kanpeText.trim(), SLIDE_WIDTH - 80)
     const kanpeLineH = kanpeFontSize * 1.5
-    const maxKanpeLines = Math.floor((kanpeAreaH - 35 - kanpePadY) / kanpeLineH)
-
-    for (let i = 0; i < Math.min(kanpeLines.length, maxKanpeLines); i++) {
-      ctx.fillText(kanpeLines[i], kanpePadX, kanpeAreaY + 40 + kanpePadY + i * kanpeLineH)
+    const maxLines = Math.floor((kanpeH - 28) / kanpeLineH)
+    for (let i = 0; i < Math.min(kanpeLines.length, maxLines); i++) {
+      ctx.fillText(kanpeLines[i], 40, kanpeY + 26 + i * kanpeLineH)
     }
   }
 
   const url = canvas.toDataURL('image/png')
-  return { url, pageText: bullets.slice(0, visibleCount).join('\n') }
+  return { url, pageText: telop }
 }
 
 /**
- * 1ステップについてプログレッシブ箇条書きスライド群を生成
- * bullets.length 枚のスライドを返す
+ * 1ステップ分のテロップスライド群を順番に生成
  */
-export async function compositeBulletProgressiveSet(stepTitle, bullets, kanpeChunks, options = {}) {
+export async function compositeTelopProgressiveSet(stepTitle, telops, kanpeChunks, options = {}) {
   const results = []
-  for (let i = 1; i <= bullets.length; i++) {
-    const kanpe = kanpeChunks[i - 1] || ''
-    const slide = await compositeBulletSlide(stepTitle, bullets, i, kanpe, options)
+  for (let i = 0; i < telops.length; i++) {
+    const kanpe = kanpeChunks[i] || ''
+    const slide = await compositeTelopSlide(stepTitle, telops[i], kanpe, options)
     results.push(slide)
   }
   return results
 }
 
 /**
- * カンペテキストを N 分割
+ * 本文テキストをN分割してカンペに使う
  */
 export function splitKanpeText(text, count) {
   if (!text || count <= 0) return Array(count).fill('')
   const paragraphs = text.split(/\n+/).filter(p => p.trim())
   if (paragraphs.length === 0) return Array(count).fill('')
+
   if (paragraphs.length <= count) {
     const result = paragraphs.map(p => p.trim())
     while (result.length < count) result.push('')
     return result
   }
+
   const result = []
   const perChunk = Math.ceil(paragraphs.length / count)
   for (let i = 0; i < count; i++) {
     const start = i * perChunk
-    const end = Math.min(start + perChunk, paragraphs.length)
-    result.push(paragraphs.slice(start, end).join('\n'))
+    result.push(
+      paragraphs.slice(start, Math.min(start + perChunk, paragraphs.length)).join(' ').trim()
+    )
   }
   return result
+}
+
+// 後方互換エイリアス
+export const compositeBulletSlide = compositeTelopSlide
+export async function compositeBulletProgressiveSet(stepTitle, bullets, kanpeChunks, options = {}) {
+  return compositeTelopProgressiveSet(stepTitle, bullets, kanpeChunks, options)
 }
